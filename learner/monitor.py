@@ -23,8 +23,18 @@ FAILURE_THRESHOLD = 60.0
 # Statistics helpers
 # ---------------------------------------------------------------------------
 
-def compute_stats(trial_results):
-    """Return a stats dict from a list of (temp, answer) tuples for one problem."""
+def compute_stats(trial_results, preferred_answers=None):
+    """Return a stats dict from a list of (temp, answer) tuples for one problem.
+
+    Parameters
+    ----------
+    trial_results : list of (float, str)
+        (final_temperature, answer_string) for each trial.
+    preferred_answers : set of str or None
+        The celebrated/ideal answers for this problem (from PREFERRED_ANSWERS).
+        When provided, adds ``preferred_count`` and ``preferred_rate`` to the
+        returned dict.
+    """
     temps = [t for t, _ in trial_results]
     answers = [a for _, a in trial_results]
 
@@ -36,10 +46,9 @@ def compute_stats(trial_results):
     answer_dist = {}
     for a in answers:
         answer_dist[a] = answer_dist.get(a, 0) + 1
-    # Sort by frequency descending for readability
     answer_dist = dict(sorted(answer_dist.items(), key=lambda kv: -kv[1]))
 
-    return {
+    stats = {
         "n_trials": n,
         "mean": mean,
         "variance": variance,
@@ -49,12 +58,22 @@ def compute_stats(trial_results):
         "answer_distribution": answer_dist,
     }
 
+    if preferred_answers is not None:
+        preferred_count = sum(1 for a in answers if a in preferred_answers)
+        stats["preferred_answers"] = sorted(preferred_answers)
+        stats["preferred_count"] = preferred_count
+        stats["preferred_rate"] = preferred_count / n
+
+    return stats
+
 
 def compute_overall_stats(problem_stats):
     """Aggregate stats across all problems into a single overall stats dict.
 
     Pools all individual trial results so that variance and failure counts
     reflect the full 45-trial distribution, not just averages of averages.
+    preferred_rate is averaged across only the problems that have preferred
+    answers defined (i.e. where the per-problem stat includes that key).
     """
     all_means = [s["mean"] for s in problem_stats.values()]
     all_variances = [s["variance"] for s in problem_stats.values()]
@@ -68,16 +87,11 @@ def compute_overall_stats(problem_stats):
             combined_answers[ans] = combined_answers.get(ans, 0) + cnt
     combined_answers = dict(sorted(combined_answers.items(), key=lambda kv: -kv[1]))
 
-    # Mean of problem means (equal weight per problem)
     overall_mean = sum(all_means) / len(all_means)
-
-    # Variance: average within-problem variance (law of total variance, ignoring
-    # between-problem term since problems are not commensurable).
     overall_variance = sum(all_variances) / len(all_variances)
-
     total_failures = sum(all_failures)
 
-    return {
+    result = {
         "n_trials": all_n,
         "mean": overall_mean,
         "variance": overall_variance,
@@ -86,6 +100,20 @@ def compute_overall_stats(problem_stats):
         "failure_rate": total_failures / all_n,
         "answer_distribution": combined_answers,
     }
+
+    # Aggregate preferred_rate if available (requires PREFERRED_ANSWERS lookup).
+    pref_rates = [
+        s["preferred_rate"]
+        for s in problem_stats.values()
+        if "preferred_rate" in s
+    ]
+    if pref_rates:
+        result["preferred_rate"] = sum(pref_rates) / len(pref_rates)
+        result["preferred_count"] = sum(
+            s.get("preferred_count", 0) for s in problem_stats.values()
+        )
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -128,19 +156,25 @@ class Monitor:
             for ans, cnt in list(overall["answer_distribution"].items())[:4]
         )
         diag_parts = "  ".join(
-            "{} fail={} σ={:.1f}".format(
+            "{} pref={:.0f}% fail={} σ={:.1f}".format(
                 curriculum.problem_label(p),
+                s.get("preferred_rate", float("nan")) * 100,
                 s["failures"],
                 s["std"],
             )
             for p, s in diagnostic.items()
         )
+        pref_str = (
+            "  pref={:.0f}%".format(overall["preferred_rate"] * 100)
+            if "preferred_rate" in overall else ""
+        )
         print(
-            "        σ={:.2f}  fail={}/{} ({:.0f}%)  answers=[{}]  diag: {}".format(
+            "        σ={:.2f}  fail={}/{} ({:.0f}%){}  answers=[{}]  diag: {}".format(
                 overall["std"],
                 overall["failures"],
                 overall["n_trials"],
                 overall["failure_rate"] * 100,
+                pref_str,
                 top_answers,
                 diag_parts,
             )

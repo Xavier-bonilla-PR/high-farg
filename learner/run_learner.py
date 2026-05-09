@@ -54,6 +54,14 @@ def main(argv=None):
     parser.add_argument("--output", default="weights", help="Output directory")
     parser.add_argument("--seed", type=int, default=0, help="Optimiser RNG seed")
     parser.add_argument(
+        "--answer-weight", type=float, default=10.0,
+        help=(
+            "Weight for answer-correctness in objective "
+            "(temperature units added per 100%% wrong answers; default 10.0). "
+            "Set to 0 to optimise on temperature alone."
+        ),
+    )
+    parser.add_argument(
         "--weights",
         default=None,
         help="Path to initial weight JSON (default: generate baseline)",
@@ -94,6 +102,7 @@ def main(argv=None):
         patience=args.patience,
         max_steps=args.steps,
         rng_seed=args.seed,
+        answer_weight=args.answer_weight,
     )
     best_weights, best_temp = climber.run()
 

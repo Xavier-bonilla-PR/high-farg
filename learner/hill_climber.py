@@ -45,12 +45,14 @@ class HillClimber:
         patience=50,
         max_steps=500,
         rng_seed=0,
+        answer_weight=10.0,
     ):
         self.curriculum = curriculum
         self.output_dir = output_dir
         self.delta = delta
         self.patience = patience
         self.max_steps = max_steps
+        self.answer_weight = answer_weight
         self.rng = random.Random(rng_seed)
 
         os.makedirs(output_dir, exist_ok=True)
@@ -65,6 +67,23 @@ class HillClimber:
         self.no_improve_count = 0
 
     # ------------------------------------------------------------------
+    # Objective
+    # ------------------------------------------------------------------
+
+    def _objective(self, overall_stats):
+        """Combined objective = mean_temp + answer_weight * wrong_answer_fraction.
+
+        answer_weight (default 10.0) is in temperature units.  A value of 10
+        means 100% wrong answers adds 10 degrees to the effective temperature.
+        Set answer_weight=0 to optimise purely on temperature.
+        """
+        mean = overall_stats["mean"]
+        if self.answer_weight == 0 or "preferred_rate" not in overall_stats:
+            return mean
+        wrong_rate = 1.0 - overall_stats["preferred_rate"]
+        return mean + self.answer_weight * wrong_rate
+
+    # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
 
@@ -74,12 +93,13 @@ class HillClimber:
         prob_stats, overall_stats, diag_stats = self.curriculum.evaluate_all(
             self.current_weights
         )
-        self.current_overall = overall_stats["mean"]
+        self.current_overall = self._objective(overall_stats)
         self.best_overall = self.current_overall
         self.best_weights = dict(self.current_weights)
         self._log_step(
             step=0, accepted=True, perturbed_key=None, restart=False,
             old_temp=self.current_overall, new_temp=self.current_overall,
+            effective_delta=self.delta,
             overall_stats=overall_stats, diagnostic_stats=diag_stats,
         )
         self.monitor.record(
@@ -88,7 +108,11 @@ class HillClimber:
             diagnostic_stats=diag_stats, curriculum=self.curriculum,
         )
         print(
-            "  Baseline overall mean temp: {:.4f}".format(self.current_overall)
+            "  Baseline objective: {:.4f}  (mean={:.4f}  pref={:.0f}%)".format(
+                self.current_overall,
+                overall_stats["mean"],
+                overall_stats.get("preferred_rate", float("nan")) * 100,
+            )
         )
         self._save_best()
 
@@ -100,23 +124,27 @@ class HillClimber:
             # --- random restart after patience exhausted ---
             if self.no_improve_count >= self.patience:
                 # Jump unconditionally to a large perturbation of best weights.
-                # We do NOT apply acceptance testing on a restart — it is a
-                # forced escape from the current basin.
                 candidate_weights, key = perturb(
                     self.best_weights, self.delta * 5, self.rng
                 )
                 self.no_improve_count = 0
                 restart = True
+                effective_delta = self.delta  # reset for logging
             else:
-                # --- normal perturbation ---
+                # Adaptive delta: decay linearly from delta → delta*0.1 as
+                # no_improve_count rises toward patience.  Smaller moves when
+                # we are already close to giving up on this basin, larger moves
+                # after a fresh start or recent acceptance.
+                decay = 1.0 - 0.9 * (self.no_improve_count / self.patience)
+                effective_delta = self.delta * decay
                 candidate_weights, key = perturb(
-                    self.current_weights, self.delta, self.rng
+                    self.current_weights, effective_delta, self.rng
                 )
 
             prob_stats, overall_stats, diag_stats = self.curriculum.evaluate_all(
                 candidate_weights
             )
-            new_overall = overall_stats["mean"]
+            new_overall = self._objective(overall_stats)
             old_temp = self.current_overall
 
             if restart:
@@ -144,11 +172,12 @@ class HillClimber:
             )
             self._print_step(
                 step, self.current_overall, self.best_overall,
-                key_label, accepted, diag_stats,
+                key_label, accepted, effective_delta, diag_stats,
             )
             self._log_step(
                 step=step, accepted=accepted, perturbed_key=key_label,
                 restart=restart, old_temp=old_temp, new_temp=new_overall,
+                effective_delta=effective_delta,
                 overall_stats=overall_stats, diagnostic_stats=diag_stats,
             )
             self.monitor.record(
@@ -178,26 +207,28 @@ class HillClimber:
         path = os.path.join(self.output_dir, "best.json")
         save(self.best_weights, path)
 
-    def _print_step(self, step, current, best, key_label, accepted, diag_stats):
+    def _print_step(self, step, current, best, key_label, accepted,
+                    effective_delta, diag_stats):
         diag_parts = "  ".join(
             "{}: {:.2f}".format(self.curriculum.problem_label(p), s["mean"])
             for p, s in diag_stats.items()
         )
         status = "✓ accepted" if accepted else "✗ rejected"
         print(
-            "step {:4d} | cur {:.4f} | best {:.4f} | {} | {}  [diag: {}]".format(
-                step, current, best, status, key_label, diag_parts
+            "step {:4d} | cur {:.4f} | best {:.4f} | δ={:.3f} | {} | {}  [diag: {}]".format(
+                step, current, best, effective_delta, status, key_label, diag_parts
             )
         )
 
     def _log_step(self, step, accepted, perturbed_key, restart,
-                  old_temp, new_temp, overall_stats, diagnostic_stats):
+                  old_temp, new_temp, effective_delta, overall_stats, diagnostic_stats):
         from learner.monitor import _serialisable
         entry = {
             "step": step,
             "accepted": accepted,
             "restart": restart,
             "perturbed_key": perturbed_key,
+            "effective_delta": round(effective_delta, 4),
             "old_temp": old_temp,
             "new_temp": new_temp,
             "best_temp": self.best_overall,

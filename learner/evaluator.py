@@ -153,12 +153,19 @@ def evaluate_problem(weight_dict, problem):
     return compute_stats(results)
 
 
-def evaluate_problems_batched(weight_dict, problems):
+def evaluate_problems_batched(weight_dict, problems, preferred_answers_map=None):
     """Return ``{problem: stats_dict}`` for all problems using one shared pool.
 
     All len(problems) × len(SEEDS) workers are submitted together so the OS
     scheduler can keep all cores busy.  Each stats dict contains mean,
-    variance, std, failures, failure_rate, and answer_distribution.
+    variance, std, failures, failure_rate, answer_distribution, and —
+    when preferred_answers_map is provided — preferred_rate.
+
+    Parameters
+    ----------
+    preferred_answers_map : dict or None
+        ``{problem_tuple: set_of_preferred_answer_strings}``
+        Typically ``curriculum.PREFERRED_ANSWERS``.
     """
     from learner.monitor import compute_stats
     all_args = [
@@ -171,6 +178,9 @@ def evaluate_problems_batched(weight_dict, problems):
 
     n = len(SEEDS)
     return {
-        problem: compute_stats(all_results[i * n: (i + 1) * n])
+        problem: compute_stats(
+            all_results[i * n: (i + 1) * n],
+            preferred_answers=(preferred_answers_map or {}).get(problem),
+        )
         for i, problem in enumerate(problems)
     }
