@@ -129,7 +129,7 @@ def _run_single(args):
             last_update = current_time
         ctx.coderack.chooseAndRunCodelet()
 
-    return ctx.temperature.last_unclamped_value
+    return ctx.temperature.last_unclamped_value, ctx.workspace.finalAnswer
 
 
 # ---------------------------------------------------------------------------
@@ -137,37 +137,40 @@ def _run_single(args):
 # ---------------------------------------------------------------------------
 
 def evaluate_problem(weight_dict, problem):
-    """Return mean final temperature across SEEDS for a single problem.
+    """Return stats dict for a single problem across SEEDS.
 
-    Opens a fresh ProcessPoolExecutor for the 5 seed-runs.  Prefer
+    Opens a fresh ProcessPoolExecutor for the seed-runs.  Prefer
     evaluate_problems_batched() when evaluating multiple problems to amortise
     pool startup cost.
     """
+    from learner.monitor import compute_stats
     initial, modified, target = problem
     args_list = [
         (weight_dict, initial, modified, target, s) for s in SEEDS
     ]
     with ProcessPoolExecutor() as executor:
-        temps = list(executor.map(_run_single, args_list))
-    return sum(temps) / len(temps)
+        results = list(executor.map(_run_single, args_list))
+    return compute_stats(results)
 
 
 def evaluate_problems_batched(weight_dict, problems):
-    """Return a list of mean temperatures, one per problem, using one shared pool.
+    """Return ``{problem: stats_dict}`` for all problems using one shared pool.
 
     All len(problems) × len(SEEDS) workers are submitted together so the OS
-    scheduler can keep all cores busy.
+    scheduler can keep all cores busy.  Each stats dict contains mean,
+    variance, std, failures, failure_rate, and answer_distribution.
     """
+    from learner.monitor import compute_stats
     all_args = [
         (weight_dict, p[0], p[1], p[2], s)
         for p in problems
         for s in SEEDS
     ]
     with ProcessPoolExecutor() as executor:
-        all_temps = list(executor.map(_run_single, all_args))
+        all_results = list(executor.map(_run_single, all_args))
 
     n = len(SEEDS)
-    return [
-        sum(all_temps[i * n: (i + 1) * n]) / n
-        for i in range(len(problems))
-    ]
+    return {
+        problem: compute_stats(all_results[i * n: (i + 1) * n])
+        for i, problem in enumerate(problems)
+    }

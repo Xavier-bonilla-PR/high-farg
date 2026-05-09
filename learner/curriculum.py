@@ -54,30 +54,32 @@ class Curriculum:
         weight_dict : dict
             Current weight configuration.
         evaluator_fn : callable or None
-            Optional ``(weight_dict, problem) -> mean_temp`` function.
+            Optional ``(weight_dict, problem) -> stats_dict`` function.
             When None (default) the batched parallel evaluator is used,
             which is far more efficient for full-curriculum evaluation.
 
         Returns
         -------
-        problem_temps : dict
-            ``{problem_tuple: mean_temp}``
-        overall_mean : float
-            Mean temperature across all problems.
-        diagnostic_temps : dict
-            ``{problem_tuple: mean_temp}`` for the two diagnostic problems.
+        problem_stats : dict
+            ``{problem_tuple: stats_dict}`` — per-problem mean, variance,
+            failures, and answer distribution.
+        overall_stats : dict
+            Aggregated stats across all problems and all trials.
+        diagnostic_stats : dict
+            ``{problem_tuple: stats_dict}`` for the two diagnostic problems.
         """
+        from learner.evaluator import evaluate_problems_batched
+        from learner.monitor import compute_overall_stats
+
         if evaluator_fn is None:
-            from learner.evaluator import evaluate_problems_batched
-            means = evaluate_problems_batched(weight_dict, self.problems)
+            problem_stats = evaluate_problems_batched(weight_dict, self.problems)
         else:
-            means = [evaluator_fn(weight_dict, p) for p in self.problems]
+            problem_stats = {p: evaluator_fn(weight_dict, p) for p in self.problems}
 
-        problem_temps = dict(zip(self.problems, means))
-        overall_mean = sum(means) / len(means)
-        diagnostic_temps = {p: problem_temps[p] for p in self.diagnostic_problems}
+        overall_stats = compute_overall_stats(problem_stats)
+        diagnostic_stats = {p: problem_stats[p] for p in self.diagnostic_problems}
 
-        return problem_temps, overall_mean, diagnostic_temps
+        return problem_stats, overall_stats, diagnostic_stats
 
     def problem_label(self, problem):
         """Human-readable label for a problem tuple, e.g. 'abc→abd/kji'."""

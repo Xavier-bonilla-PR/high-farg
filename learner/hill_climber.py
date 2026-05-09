@@ -26,6 +26,7 @@ import os
 import random
 
 from learner.curriculum import Curriculum
+from learner.monitor import Monitor
 from learner.weight_space import perturb, save
 
 
@@ -53,6 +54,7 @@ class HillClimber:
         self.rng = random.Random(rng_seed)
 
         os.makedirs(output_dir, exist_ok=True)
+        self.monitor = Monitor(output_dir)
 
         self.current_weights = dict(initial_weights)
         self.best_weights = dict(initial_weights)
@@ -69,19 +71,21 @@ class HillClimber:
     def run(self):
         """Run the hill-climbing loop; return best_weights and best_overall_temp."""
         print("Initialising: evaluating baseline weights …")
-        _, self.current_overall, diag = self.curriculum.evaluate_all(
+        prob_stats, overall_stats, diag_stats = self.curriculum.evaluate_all(
             self.current_weights
         )
+        self.current_overall = overall_stats["mean"]
         self.best_overall = self.current_overall
         self.best_weights = dict(self.current_weights)
         self._log_step(
-            step=0,
-            accepted=True,
-            perturbed_key=None,
-            old_temp=self.current_overall,
-            new_temp=self.current_overall,
-            diagnostic_temps=diag,
-            restart=False,
+            step=0, accepted=True, perturbed_key=None, restart=False,
+            old_temp=self.current_overall, new_temp=self.current_overall,
+            overall_stats=overall_stats, diagnostic_stats=diag_stats,
+        )
+        self.monitor.record(
+            step=0, accepted=True, restart=False,
+            overall_stats=overall_stats, problem_stats=prob_stats,
+            diagnostic_stats=diag_stats, curriculum=self.curriculum,
         )
         print(
             "  Baseline overall mean temp: {:.4f}".format(self.current_overall)
@@ -109,16 +113,16 @@ class HillClimber:
                     self.current_weights, self.delta, self.rng
                 )
 
-            _, new_overall, diag = self.curriculum.evaluate_all(candidate_weights)
-
+            prob_stats, overall_stats, diag_stats = self.curriculum.evaluate_all(
+                candidate_weights
+            )
+            new_overall = overall_stats["mean"]
             old_temp = self.current_overall
 
             if restart:
-                # Always accept restart to advance to the new position.
                 accepted = True
                 self.current_weights = candidate_weights
                 self.current_overall = new_overall
-                # (steps_since_any_improve does not reset on a forced restart)
             else:
                 accepted = new_overall < self.current_overall
                 if accepted:
@@ -136,20 +140,21 @@ class HillClimber:
                 self._save_best()
 
             key_label = (
-                "{}->{}" .format(key[0], key[1]) if key is not None else "—"
+                "{}->{}".format(key[0], key[1]) if key is not None else "—"
             )
             self._print_step(
                 step, self.current_overall, self.best_overall,
-                key_label, accepted, diag,
+                key_label, accepted, diag_stats,
             )
             self._log_step(
-                step=step,
-                accepted=accepted,
-                perturbed_key=key_label,
-                old_temp=old_temp,
-                new_temp=new_overall,
-                diagnostic_temps=diag,
-                restart=restart,
+                step=step, accepted=accepted, perturbed_key=key_label,
+                restart=restart, old_temp=old_temp, new_temp=new_overall,
+                overall_stats=overall_stats, diagnostic_stats=diag_stats,
+            )
+            self.monitor.record(
+                step=step, accepted=accepted, restart=restart,
+                overall_stats=overall_stats, problem_stats=prob_stats,
+                diagnostic_stats=diag_stats, curriculum=self.curriculum,
             )
             self._flush_log()
 
@@ -173,12 +178,10 @@ class HillClimber:
         path = os.path.join(self.output_dir, "best.json")
         save(self.best_weights, path)
 
-    def _print_step(self, step, current, best, key_label, accepted, diag):
+    def _print_step(self, step, current, best, key_label, accepted, diag_stats):
         diag_parts = "  ".join(
-            "{}: {:.2f}".format(
-                self.curriculum.problem_label(p), t
-            )
-            for p, t in diag.items()
+            "{}: {:.2f}".format(self.curriculum.problem_label(p), s["mean"])
+            for p, s in diag_stats.items()
         )
         status = "✓ accepted" if accepted else "✗ rejected"
         print(
@@ -187,8 +190,9 @@ class HillClimber:
             )
         )
 
-    def _log_step(self, step, accepted, perturbed_key, old_temp, new_temp,
-                  diagnostic_temps, restart):
+    def _log_step(self, step, accepted, perturbed_key, restart,
+                  old_temp, new_temp, overall_stats, diagnostic_stats):
+        from learner.monitor import _serialisable
         entry = {
             "step": step,
             "accepted": accepted,
@@ -197,9 +201,10 @@ class HillClimber:
             "old_temp": old_temp,
             "new_temp": new_temp,
             "best_temp": self.best_overall,
+            "overall": _serialisable(overall_stats),
             "diagnostic": {
-                "{},{},{}".format(*p): t
-                for p, t in diagnostic_temps.items()
+                "{},{},{}".format(*p): _serialisable(s)
+                for p, s in diagnostic_stats.items()
             },
         }
         self.step_log.append(entry)
