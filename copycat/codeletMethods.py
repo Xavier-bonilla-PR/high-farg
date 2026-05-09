@@ -20,7 +20,7 @@ def codelet(name):
         # 1. ctx - the context object containing workspace, slipnet, etc.
         # 2. codelet - the codelet instance itself
         # The None values in the tuple represent: no default args, no *args, no **kwargs
-        assert tuple(inspect.getargspec(f)) == (['ctx', 'codelet'], None, None, None)
+        assert tuple(inspect.getfullargspec(f))[:4] == (['ctx', 'codelet'], None, None, None)
         
         # Mark this function as a valid codelet method
         f.is_codelet_method = True
